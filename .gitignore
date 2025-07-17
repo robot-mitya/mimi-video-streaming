@@ -1,0 +1,30 @@
+# --- ESP-IDF build artifacts ---
+build/
+*.bin
+*.elf
+*.map
+
+# --- SDK configuration ---
+sdkconfig.old
+
+# --- ESP-IDF managed components ---
+managed_components/
+dependencies.lock
+
+# --- VSCode ---
+.vscode/
+
+# --- CLion / JetBrains IDE ---
+.idea/
+cmake-build-*/
+
+# --- Python cache ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- Misc ---
+*.log
+.DS_Store
+Thumbs.db
