@@ -1,0 +1,9 @@
+menu "JPEG Encoder"
+
+config JPEG_ENC_ENABLE_TASK
+    bool "Enable internal JPEG encoder task"
+    default y
+    help
+        If enabled, jpeg_enc_process() will run the encoder in a background task.
+
+endmenu

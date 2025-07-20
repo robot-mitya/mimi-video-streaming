@@ -40,9 +40,6 @@ static EventGroupHandle_t wifi_event_group;
 
 #define MAX_JPEG_SIZE (200 * 1024)
 
-static camera_fb_t *latest_fb = NULL;
-static SemaphoreHandle_t fb_mutex = NULL;
-
 static void event_handler(void* arg, esp_event_base_t event_base,
                           int32_t event_id, void* event_data)
 {
@@ -67,59 +64,43 @@ static void event_handler(void* arg, esp_event_base_t event_base,
     }
 }
 
-static esp_err_t stream_handler(httpd_req_t *req)
-{
-    char part_buf[64];
-    static const char *boundary = "--frame";
-    httpd_resp_set_type(req, "multipart/x-mixed-replace; boundary=frame");
-    // httpd_resp_send_chunk(req, "\r\n", 2);
-
-    esp_err_t ret;
-
-    while (1) {
-        if (xSemaphoreTake(fb_mutex, portMAX_DELAY)) {
-            camera_fb_t *fb = latest_fb;
-            if (fb) {
-                // ESP_LOGI(TAG, "JPEG frame size: %d bytes, [%dx%d]", fb->len, fb->width, fb->height);
-                ESP_LOGI(TAG, "Raw frame format: %d, size: %dx%d, len: %d", fb->format, fb->width, fb->height, fb->len);
-                snprintf(part_buf, sizeof(part_buf),
-                         "\r\n%s\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n",
-                         boundary, fb->len);
-                ret = httpd_resp_send_chunk(req, part_buf, strlen(part_buf));
-                if (ret != ESP_OK) {
-                    ESP_LOGE(TAG, "httpd_resp_send_chunk(%d) failed with code %d", strlen(part_buf), ret);
-                    break;
-                }
-                ret = httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len);
-                if (ret != ESP_OK) {
-                    ESP_LOGE(TAG, "httpd_resp_send_chunk(%d) failed with code %d", fb->len, ret);
-                    break;
-                }
-            }
-            xSemaphoreGive(fb_mutex);
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
-    ESP_LOGW(TAG, "Client disconnected from /stream");
-    return ESP_OK;
-}
-
-static httpd_handle_t start_webserver(void)
-{
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    httpd_handle_t server = NULL;
-    if (httpd_start(&server, &config) == ESP_OK) {
-        const httpd_uri_t stream_uri = {
-            .uri       = "/stream",
-            .method    = HTTP_GET,
-            .handler   = stream_handler,
-            .user_ctx  = NULL
-        };
-        httpd_register_uri_handler(server, &stream_uri);
-    }
-    return server;
-}
+// static esp_err_t http_stream_handler(httpd_req_t *req)
+// {
+//     char part_buf[64];
+//     static const char *boundary = "--frame";
+//     httpd_resp_set_type(req, "multipart/x-mixed-replace; boundary=frame");
+//     // httpd_resp_send_chunk(req, "\r\n", 2);
+//
+//     esp_err_t ret;
+//
+//     while (1) {
+//         if (xSemaphoreTake(fb_mutex, portMAX_DELAY)) {
+//             camera_fb_t *fb = latest_fb;
+//             if (fb) {
+//                 // ESP_LOGI(TAG, "JPEG frame size: %d bytes, [%dx%d]", fb->len, fb->width, fb->height);
+//                 ESP_LOGI(TAG, "Raw frame format: %d, size: %dx%d, len: %d", fb->format, fb->width, fb->height, fb->len);
+//                 snprintf(part_buf, sizeof(part_buf),
+//                          "\r\n%s\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n",
+//                          boundary, fb->len);
+//                 ret = httpd_resp_send_chunk(req, part_buf, strlen(part_buf));
+//                 if (ret != ESP_OK) {
+//                     ESP_LOGE(TAG, "httpd_resp_send_chunk(%d) failed with code %d", strlen(part_buf), ret);
+//                     break;
+//                 }
+//                 ret = httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len);
+//                 if (ret != ESP_OK) {
+//                     ESP_LOGE(TAG, "httpd_resp_send_chunk(%d) failed with code %d", fb->len, ret);
+//                     break;
+//                 }
+//             }
+//             xSemaphoreGive(fb_mutex);
+//         }
+//         vTaskDelay(pdMS_TO_TICKS(100));
+//     }
+//
+//     ESP_LOGW(TAG, "Client disconnected from /stream");
+//     return ESP_OK;
+// }
 
 static camera_config_t camera_config = {
     .pin_pwdn = CAM_PIN_PWDN,
@@ -162,16 +143,16 @@ static esp_err_t init_camera(void) {
     return err;
 }
 
+QueueHandle_t frame_queue;  // Очередь JPEG-кадров, созданная заранее
+
 static void camera_task(void *arg)
 {
-    // Codec configuration:
     jpeg_enc_config_t enc_cfg = {
         .quality = 50,
-        .width = 320,  // (Size values are temporary. I'll change them on the first frame.)
+        .width = 320,
         .height = 240
     };
 
-    // Create JPEG codec:
     jpeg_enc_handle_t jpeg_enc = NULL;
     if (jpeg_enc_open(&enc_cfg, &jpeg_enc) != JPEG_ERR_OK) {
         ESP_LOGE(TAG, "jpeg_enc_open() failed");
@@ -179,7 +160,6 @@ static void camera_task(void *arg)
         return;
     }
 
-    // Allocate buffer once:
     const int out_len = MAX_JPEG_SIZE;
     uint8_t *out_buf = heap_caps_malloc(out_len, MALLOC_CAP_SPIRAM);
     if (!out_buf) {
@@ -197,7 +177,6 @@ static void camera_task(void *arg)
             continue;
         }
 
-        // Update width and height for the first time:
         if (enc_cfg.width != fb->width || enc_cfg.height != fb->height) {
             enc_cfg.width = fb->width;
             enc_cfg.height = fb->height;
@@ -209,9 +188,6 @@ static void camera_task(void *arg)
             }
         }
 
-        int jpeg_len = 0;
-
-        // As suggested for the jpeg_enc_process(), I use jpeg_calloc_align() for the 16-bytes aligned buffer.
         uint8_t *in_buf = jpeg_calloc_align(fb->len, 16);
         if (!in_buf) {
             ESP_LOGE(TAG, "Failed to alloc aligned input buffer");
@@ -221,6 +197,7 @@ static void camera_task(void *arg)
         }
         memcpy(in_buf, fb->buf, fb->len);
 
+        int jpeg_len = 0;
         const jpeg_error_t jret = jpeg_enc_process(jpeg_enc, in_buf, fb->len, out_buf, out_len, &jpeg_len);
         free(in_buf);
 
@@ -239,13 +216,7 @@ static void camera_task(void *arg)
             continue;
         }
 
-        *jpeg_fb = (camera_fb_t){
-            .buf = malloc(jpeg_len),
-            .len = jpeg_len,
-            .width = fb->width,
-            .height = fb->height,
-            .format = PIXFORMAT_JPEG
-        };
+        jpeg_fb->buf = malloc(jpeg_len);
         if (!jpeg_fb->buf) {
             ESP_LOGE(TAG, "Failed to alloc output buffer");
             free(jpeg_fb);
@@ -254,16 +225,13 @@ static void camera_task(void *arg)
         }
 
         memcpy(jpeg_fb->buf, out_buf, jpeg_len);
+        jpeg_fb->len = jpeg_len;
+        jpeg_fb->width = fb->width;
+        jpeg_fb->height = fb->height;
+        jpeg_fb->format = PIXFORMAT_JPEG;
 
-        if (xSemaphoreTake(fb_mutex, portMAX_DELAY)) {
-            if (latest_fb) {
-                free(latest_fb->buf);
-                free(latest_fb);
-            }
-            latest_fb = jpeg_fb;
-            // ESP_LOGI(TAG, "JPEG frame size: %d bytes, [%dx%d]", latest_fb->len, latest_fb->width, latest_fb->height);
-            xSemaphoreGive(fb_mutex);
-        } else {
+        if (xQueueSend(frame_queue, &jpeg_fb, pdMS_TO_TICKS(10)) != pdTRUE) {
+            ESP_LOGW(TAG, "Frame queue full, dropping frame");
             free(jpeg_fb->buf);
             free(jpeg_fb);
         }
@@ -271,6 +239,55 @@ static void camera_task(void *arg)
         esp_camera_fb_return(fb);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
+}
+
+static esp_err_t http_stream_handler(httpd_req_t *req)
+{
+    static const char *boundary = "\r\n--123456789000000000000987654321\r\n";
+    static const char *content_type = "image/jpeg";
+
+    httpd_resp_set_type(req, "multipart/x-mixed-replace; boundary=123456789000000000000987654321");
+
+    while (1) {
+        camera_fb_t *jpeg_fb = NULL;
+
+        if (xQueueReceive(frame_queue, &jpeg_fb, pdMS_TO_TICKS(1000)) == pdTRUE) {
+            char header_buf[128];
+            const int header_len = snprintf(header_buf, sizeof(header_buf),
+                                      "%sContent-Type: %s\r\nContent-Length: %u\r\n\r\n",
+                                      boundary, content_type, jpeg_fb->len);
+
+            if (httpd_resp_send_chunk(req, header_buf, header_len) != ESP_OK ||
+                httpd_resp_send_chunk(req, (const char *)jpeg_fb->buf, jpeg_fb->len) != ESP_OK) {
+                ESP_LOGW(TAG, "Client disconnected");
+                free(jpeg_fb->buf);
+                free(jpeg_fb);
+                break;
+            }
+
+            free(jpeg_fb->buf);
+            free(jpeg_fb);
+        }
+    }
+
+    httpd_resp_send_chunk(req, NULL, 0); // Закрыть поток
+    return ESP_OK;
+}
+
+static httpd_handle_t start_webserver(void)
+{
+    const httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    httpd_handle_t server = NULL;
+    if (httpd_start(&server, &config) == ESP_OK) {
+        const httpd_uri_t stream_uri = {
+            .uri       = "/stream",
+            .method    = HTTP_GET,
+            .handler   = http_stream_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &stream_uri);
+    }
+    return server;
 }
 
 static void init_wifi(void)
@@ -345,13 +362,12 @@ void app_main(void) {
     ESP_LOGI(TAG, "Initializing WiFi connection...");
     init_wifi();
 
-    fb_mutex = xSemaphoreCreateMutex();
-    assert(fb_mutex);
-
     ESP_LOGI(TAG, "Initializing camera...");
     ESP_ERROR_CHECK(init_camera());
 
-    xTaskCreatePinnedToCore(camera_task, "camera_task", 8192, NULL, 5, NULL, 0);
+    frame_queue = xQueueCreate(3, sizeof(camera_fb_t *));
+    xTaskCreatePinnedToCore(camera_task, "camera_task", 4096, NULL, 10, NULL, 0);
+    // xTaskCreatePinnedToCore(camera_task, "camera_task", 8192, NULL, 5, NULL, 0);
     start_webserver();
 
     // TODO: add minglish UART command handler
