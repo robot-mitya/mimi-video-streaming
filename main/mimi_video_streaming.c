@@ -126,7 +126,7 @@ static camera_config_t camera_config = {
     .ledc_timer = LEDC_TIMER_0,
     .ledc_channel = LEDC_CHANNEL_0,
 
-    .pixel_format = PIXFORMAT_RGB565, //YUV422,GRAYSCALE,RGB565,JPEG
+    .pixel_format = PIXFORMAT_YUV422, //YUV422,GRAYSCALE,RGB565,JPEG
     .frame_size = FRAMESIZE_QVGA,    //QQVGA-UXGA, For ESP32, do not use sizes above QVGA when not JPEG. The performance of the ESP32-S series has improved a lot, but JPEG mode always gives better frame rates.
 
     .jpeg_quality = 12, //0-63, for OV series camera sensors, lower number means higher quality
@@ -143,14 +143,25 @@ static esp_err_t init_camera(void) {
     return err;
 }
 
-QueueHandle_t frame_queue;  // Очередь JPEG-кадров, созданная заранее
+QueueHandle_t frame_queue;
 
+jpeg_pixel_format_t s;
 static void camera_task(void *arg)
 {
     jpeg_enc_config_t enc_cfg = {
-        .quality = 50,
+        // QVGA:
         .width = 320,
-        .height = 240
+        .height = 240,
+        // // QQVGA:
+        // .width = 160,
+        // .height = 120,
+        .src_type = JPEG_PIXEL_FORMAT_YCbYCr,
+        .subsampling = JPEG_SUBSAMPLE_420,
+        .quality = 20,
+        .rotate = JPEG_ROTATE_180D,
+        .task_enable = true,
+        .hfm_task_priority = 5,
+        .hfm_task_core = 1
     };
 
     jpeg_enc_handle_t jpeg_enc = NULL;
@@ -173,38 +184,38 @@ static void camera_task(void *arg)
         camera_fb_t *fb = esp_camera_fb_get();
         if (!fb) {
             ESP_LOGE(TAG, "Camera capture failed");
-            vTaskDelay(pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(15));
             continue;
         }
 
-        if (enc_cfg.width != fb->width || enc_cfg.height != fb->height) {
-            enc_cfg.width = fb->width;
-            enc_cfg.height = fb->height;
-            jpeg_enc_close(jpeg_enc);
-            if (jpeg_enc_open(&enc_cfg, &jpeg_enc) != JPEG_ERR_OK) {
-                ESP_LOGE(TAG, "jpeg_enc_open() failed on reinit");
-                esp_camera_fb_return(fb);
-                break;
-            }
-        }
+        // if (enc_cfg.width != fb->width || enc_cfg.height != fb->height) {
+        //     enc_cfg.width = fb->width;
+        //     enc_cfg.height = fb->height;
+        //     jpeg_enc_close(jpeg_enc);
+        //     if (jpeg_enc_open(&enc_cfg, &jpeg_enc) != JPEG_ERR_OK) {
+        //         ESP_LOGE(TAG, "jpeg_enc_open() failed on reinit");
+        //         esp_camera_fb_return(fb);
+        //         break;
+        //     }
+        // }
 
         uint8_t *in_buf = jpeg_calloc_align(fb->len, 16);
         if (!in_buf) {
             ESP_LOGE(TAG, "Failed to alloc aligned input buffer");
             esp_camera_fb_return(fb);
-            vTaskDelay(pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(15));
             continue;
         }
         memcpy(in_buf, fb->buf, fb->len);
 
         int jpeg_len = 0;
         const jpeg_error_t jret = jpeg_enc_process(jpeg_enc, in_buf, fb->len, out_buf, out_len, &jpeg_len);
-        free(in_buf);
+        jpeg_free_align(in_buf);
 
         if (jret != JPEG_ERR_OK || jpeg_len <= 0) {
             ESP_LOGE(TAG, "JPEG encoding failed (%d)", jret);
             esp_camera_fb_return(fb);
-            vTaskDelay(pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(15));
             continue;
         }
 
@@ -212,7 +223,7 @@ static void camera_task(void *arg)
         if (!jpeg_fb) {
             ESP_LOGE(TAG, "Failed to alloc camera_fb_t");
             esp_camera_fb_return(fb);
-            vTaskDelay(pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(15));
             continue;
         }
 
@@ -226,9 +237,9 @@ static void camera_task(void *arg)
 
         memcpy(jpeg_fb->buf, out_buf, jpeg_len);
         jpeg_fb->len = jpeg_len;
-        jpeg_fb->width = fb->width;
-        jpeg_fb->height = fb->height;
-        jpeg_fb->format = PIXFORMAT_JPEG;
+        // jpeg_fb->width = fb->width;
+        // jpeg_fb->height = fb->height;
+        // jpeg_fb->format = PIXFORMAT_JPEG;
 
         if (xQueueSend(frame_queue, &jpeg_fb, pdMS_TO_TICKS(10)) != pdTRUE) {
             ESP_LOGW(TAG, "Frame queue full, dropping frame");
@@ -237,7 +248,7 @@ static void camera_task(void *arg)
         }
 
         esp_camera_fb_return(fb);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        // vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
