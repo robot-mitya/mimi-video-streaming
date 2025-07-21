@@ -10,10 +10,19 @@
 #include "nvs_flash.h"
 #include "esp_jpeg_enc.h"
 
+#define CAMERA_TASK_CORE_ID 0
+#define CAMERA_TASK_PRIORITY 10
+#define ENCODING_TASK_CORE_ID 1
+#define ENCODING_TASK_PRIORITY 5
+#define STREAMING_TASK_CORE_ID 1
+#define STREAMING_TASK_PRIORITY 5
+
 static const char *TAG = "mimi_video";
 
 static int retry_num = 0;
 static EventGroupHandle_t wifi_event_group;
+
+QueueHandle_t frame_queue;
 
 #define WIFI_SSID           "Link_D65F_2.4GHz"
 #define WIFI_PASS           "27224069"
@@ -49,7 +58,6 @@ typedef struct {
 
 static jpeg_frame_t jpeg_pool[JPEG_FRAME_POOL_SIZE];
 static int jpeg_pool_index = 0;
-
 
 static void event_handler(void*,
     // ReSharper disable once CppParameterMayBeConst
@@ -121,9 +129,6 @@ static esp_err_t init_camera(void) {
     return err;
 }
 
-QueueHandle_t frame_queue;
-
-jpeg_pixel_format_t s;
 static void camera_task(void *)
 {
     jpeg_enc_config_t enc_cfg = {
@@ -139,8 +144,8 @@ static void camera_task(void *)
         .quality = 10,
         .rotate = JPEG_ROTATE_180D,
         .task_enable = true,
-        .hfm_task_priority = 5,
-        .hfm_task_core = 1
+        .hfm_task_priority = ENCODING_TASK_PRIORITY,
+        .hfm_task_core = ENCODING_TASK_CORE_ID
     };
 
     jpeg_enc_handle_t jpeg_enc = NULL;
@@ -219,7 +224,34 @@ static esp_err_t http_stream_handler(httpd_req_t *req)
 
 static httpd_handle_t start_webserver(void)
 {
-    const httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    const httpd_config_t config = {
+        .task_priority      = STREAMING_TASK_PRIORITY,
+        .stack_size         = 4096,
+        .core_id            = STREAMING_TASK_CORE_ID,
+        .task_caps          = (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        .server_port        = 80,
+        .ctrl_port          = ESP_HTTPD_DEF_CTRL_PORT,
+        .max_open_sockets   = 7,
+        .max_uri_handlers   = 8,
+        .max_resp_headers   = 8,
+        .backlog_conn       = 5,
+        .lru_purge_enable   = false,
+        .recv_wait_timeout  = 5,
+        .send_wait_timeout  = 5,
+        .global_user_ctx = NULL,
+        .global_user_ctx_free_fn = NULL,
+        .global_transport_ctx = NULL,
+        .global_transport_ctx_free_fn = NULL,
+        .enable_so_linger = false,
+        .linger_timeout = 0,
+        .keep_alive_enable = false,
+        .keep_alive_idle = 0,
+        .keep_alive_interval = 0,
+        .keep_alive_count = 0,
+        .open_fn = NULL,
+        .close_fn = NULL,
+        .uri_match_fn = NULL
+    };
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) == ESP_OK) {
         const httpd_uri_t stream_uri = {
@@ -320,7 +352,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(init_camera());
 
     frame_queue = xQueueCreate(JPEG_FRAME_POOL_SIZE, sizeof(jpeg_frame_t *));
-    xTaskCreatePinnedToCore(camera_task, "camera_task", 4096, NULL, 10, NULL, 0);
+    xTaskCreatePinnedToCore(camera_task, "camera_task", 4096, NULL, CAMERA_TASK_PRIORITY, NULL, CAMERA_TASK_CORE_ID);
     start_webserver();
 
     // TODO: add minglish UART command handler
