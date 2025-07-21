@@ -40,8 +40,13 @@ static EventGroupHandle_t wifi_event_group;
 
 #define MAX_JPEG_SIZE (200 * 1024)
 
-static void event_handler(void* arg, esp_event_base_t event_base,
-                          int32_t event_id, void* event_data)
+static void event_handler(void*,
+    // ReSharper disable once CppParameterMayBeConst
+    esp_event_base_t event_base,
+    // ReSharper disable once CppParameterMayBeConst
+    int32_t event_id,
+    // ReSharper disable once CppParameterMayBeConstPtrOrRef
+    void* event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
@@ -57,7 +62,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG,"Connect to the AP fail");
     }
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        const ip_event_got_ip_t* event = event_data;
         ESP_LOGI(TAG, "Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
         retry_num = 0;
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
@@ -136,7 +141,7 @@ static camera_config_t camera_config = {
 };
 
 static esp_err_t init_camera(void) {
-    esp_err_t err = esp_camera_init(&camera_config);
+    const esp_err_t err = esp_camera_init(&camera_config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Camera init failed with error 0x%x", err);
     }
@@ -146,7 +151,7 @@ static esp_err_t init_camera(void) {
 QueueHandle_t frame_queue;
 
 jpeg_pixel_format_t s;
-static void camera_task(void *arg)
+static void camera_task(void *)
 {
     jpeg_enc_config_t enc_cfg = {
         // QVGA:
@@ -156,8 +161,9 @@ static void camera_task(void *arg)
         // .width = 160,
         // .height = 120,
         .src_type = JPEG_PIXEL_FORMAT_YCbYCr,
-        .subsampling = JPEG_SUBSAMPLE_420,
-        .quality = 20,
+        .subsampling = JPEG_SUBSAMPLE_422,
+        // .subsampling = JPEG_SUBSAMPLE_GRAY,
+        .quality = 10,
         .rotate = JPEG_ROTATE_180D,
         .task_enable = true,
         .hfm_task_priority = 5,
@@ -180,6 +186,7 @@ static void camera_task(void *arg)
         return;
     }
 
+    // ReSharper disable once CppDFAEndlessLoop
     while (1) {
         camera_fb_t *fb = esp_camera_fb_get();
         if (!fb) {
@@ -187,17 +194,6 @@ static void camera_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(15));
             continue;
         }
-
-        // if (enc_cfg.width != fb->width || enc_cfg.height != fb->height) {
-        //     enc_cfg.width = fb->width;
-        //     enc_cfg.height = fb->height;
-        //     jpeg_enc_close(jpeg_enc);
-        //     if (jpeg_enc_open(&enc_cfg, &jpeg_enc) != JPEG_ERR_OK) {
-        //         ESP_LOGE(TAG, "jpeg_enc_open() failed on reinit");
-        //         esp_camera_fb_return(fb);
-        //         break;
-        //     }
-        // }
 
         uint8_t *in_buf = jpeg_calloc_align(fb->len, 16);
         if (!in_buf) {
@@ -209,7 +205,7 @@ static void camera_task(void *arg)
         memcpy(in_buf, fb->buf, fb->len);
 
         int jpeg_len = 0;
-        const jpeg_error_t jret = jpeg_enc_process(jpeg_enc, in_buf, fb->len, out_buf, out_len, &jpeg_len);
+        const jpeg_error_t jret = jpeg_enc_process(jpeg_enc, in_buf, (int)fb->len, out_buf, out_len, &jpeg_len);
         jpeg_free_align(in_buf);
 
         if (jret != JPEG_ERR_OK || jpeg_len <= 0) {
@@ -237,18 +233,14 @@ static void camera_task(void *arg)
 
         memcpy(jpeg_fb->buf, out_buf, jpeg_len);
         jpeg_fb->len = jpeg_len;
-        // jpeg_fb->width = fb->width;
-        // jpeg_fb->height = fb->height;
-        // jpeg_fb->format = PIXFORMAT_JPEG;
 
-        if (xQueueSend(frame_queue, &jpeg_fb, pdMS_TO_TICKS(10)) != pdTRUE) {
-            ESP_LOGW(TAG, "Frame queue full, dropping frame");
+        if (xQueueSend(frame_queue, &jpeg_fb, 0) != pdTRUE) {
+            // ESP_LOGW(TAG, "Frame queue full, dropping frame. Frame size: %d bytes.", jpeg_fb->len);
             free(jpeg_fb->buf);
             free(jpeg_fb);
         }
 
         esp_camera_fb_return(fb);
-        // vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -262,14 +254,14 @@ static esp_err_t http_stream_handler(httpd_req_t *req)
     while (1) {
         camera_fb_t *jpeg_fb = NULL;
 
-        if (xQueueReceive(frame_queue, &jpeg_fb, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        if (xQueueReceive(frame_queue, &jpeg_fb, pdMS_TO_TICKS(10)) == pdTRUE) {
             char header_buf[128];
             const int header_len = snprintf(header_buf, sizeof(header_buf),
                                       "%sContent-Type: %s\r\nContent-Length: %u\r\n\r\n",
                                       boundary, content_type, jpeg_fb->len);
 
             if (httpd_resp_send_chunk(req, header_buf, header_len) != ESP_OK ||
-                httpd_resp_send_chunk(req, (const char *)jpeg_fb->buf, jpeg_fb->len) != ESP_OK) {
+                httpd_resp_send_chunk(req, (const char *)jpeg_fb->buf, (ssize_t)jpeg_fb->len) != ESP_OK) {
                 ESP_LOGW(TAG, "Client disconnected");
                 free(jpeg_fb->buf);
                 free(jpeg_fb);
