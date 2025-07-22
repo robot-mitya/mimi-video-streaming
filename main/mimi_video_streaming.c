@@ -9,6 +9,8 @@
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "esp_jpeg_enc.h"
+// #include "driver/i2c.h"
+#include "sccb.h"
 
 #define CAMERA_TASK_CORE_ID 0
 #define CAMERA_TASK_PRIORITY 10
@@ -29,6 +31,9 @@ QueueHandle_t frame_queue;
 #define WIFI_MAX_RETRY      5
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
+
+#define CAM_GC2145_ADDR 0x3C
+#define CAM_REGISTER_0x17 0x17
 
 #define CAM_PIN_PWDN 38
 #define CAM_PIN_RESET (-1)   //software reset will be performed
@@ -125,8 +130,15 @@ static esp_err_t init_camera(void) {
     const esp_err_t err = esp_camera_init(&camera_config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Camera init failed with error 0x%x", err);
+        return err;
     }
-    return err;
+
+    // Rotate 180:
+    uint8_t reg = SCCB_Read(CAM_GC2145_ADDR, CAM_REGISTER_0x17);
+    reg |= 0x03;
+    SCCB_Write(CAM_GC2145_ADDR, CAM_REGISTER_0x17, reg);
+
+    return ESP_OK;
 }
 
 static void camera_task(void *)
@@ -142,11 +154,21 @@ static void camera_task(void *)
         .subsampling = JPEG_SUBSAMPLE_422,
         // .subsampling = JPEG_SUBSAMPLE_GRAY,
         .quality = 10,
-        .rotate = JPEG_ROTATE_180D,
+        .rotate = JPEG_ROTATE_0D,
         .task_enable = true,
         .hfm_task_priority = ENCODING_TASK_PRIORITY,
         .hfm_task_core = ENCODING_TASK_CORE_ID
     };
+
+    // Initialize JPEG frame pool
+    for (int i = 0; i < JPEG_FRAME_POOL_SIZE; i++) {
+        jpeg_pool[i].in_buf = jpeg_calloc_align(MAX_JPEG_SIZE, 16);
+        jpeg_pool[i].fb.buf = heap_caps_malloc(MAX_JPEG_SIZE, MALLOC_CAP_SPIRAM);
+        jpeg_pool[i].fb.len = 0;
+        jpeg_pool[i].fb.width = 0;
+        jpeg_pool[i].fb.height = 0;
+        jpeg_pool[i].fb.format = PIXFORMAT_JPEG;
+    }
 
     jpeg_enc_handle_t jpeg_enc = NULL;
     if (jpeg_enc_open(&enc_cfg, &jpeg_enc) != JPEG_ERR_OK) {
@@ -156,7 +178,7 @@ static void camera_task(void *)
     }
 
     // ReSharper disable once CppDFAEndlessLoop
-    while (1) {
+    while (true) {
         camera_fb_t *fb = esp_camera_fb_get();
         if (!fb) {
             ESP_LOGE(TAG, "Camera capture failed");
@@ -326,17 +348,6 @@ static void init_wifi(void)
 }
 
 void app_main(void) {
-
-    // Initialize JPEG frame pool
-    for (int i = 0; i < JPEG_FRAME_POOL_SIZE; i++) {
-        jpeg_pool[i].in_buf = jpeg_calloc_align(MAX_JPEG_SIZE, 16);
-        jpeg_pool[i].fb.buf = heap_caps_malloc(MAX_JPEG_SIZE, MALLOC_CAP_SPIRAM);
-        jpeg_pool[i].fb.len = 0;
-        jpeg_pool[i].fb.width = 0;
-        jpeg_pool[i].fb.height = 0;
-        jpeg_pool[i].fb.format = PIXFORMAT_JPEG;
-    }
-
     ESP_LOGI(TAG, "Startup...");
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
