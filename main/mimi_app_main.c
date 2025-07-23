@@ -200,4 +200,7 @@ void app_main(void) {
     start_webserver();
 
     // TODO: add minglish UART command handler
+
+    ESP_LOGI(TAG_MIMI, "Free heap: %lu", esp_get_free_heap_size());
+    ESP_LOGI(TAG_MIMI, "Free PSRAM: %u", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 }
