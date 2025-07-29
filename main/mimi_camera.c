@@ -162,7 +162,7 @@ void camera_task(void *)
         jpeg_frame->fb.len = jpeg_len;
 
         if (xQueueSend(frame_queue, &jpeg_frame, 0) != pdTRUE) {
-            ESP_LOGW(TAG_MIMI, "Frame queue full, dropping frame. Frame size: %d bytes.", jpeg_len);
+            ESP_LOGD(TAG_MIMI, "Frame queue full, dropping frame. Frame size: %d bytes.", jpeg_len);
         }
     }
 }

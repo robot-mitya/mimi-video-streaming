@@ -1,11 +1,13 @@
 // mimi_video_streaming - ESP32-S3 MJPEG streaming with minglish control
 
 #include "esp_log.h"
+#include "esp_err.h"
 #include "nvs_flash.h"
 #include "mimi_camera.h"
 #include "mimi_common.h"
 #include "mimi_webserver.h"
 #include "mimi_wifi.h"
+#include "mimi_uart.h"
 
 void app_main(void) {
     ESP_LOGI(TAG_MIMI, "Startup...");
@@ -27,7 +29,8 @@ void app_main(void) {
     xTaskCreatePinnedToCore(camera_task, "camera_task", 4096, NULL, CAMERA_TASK_PRIORITY, NULL, CAMERA_TASK_CORE_ID);
     start_webserver();
 
-    // TODO: add minglish UART command handler
+    init_uart();
+    xTaskCreatePinnedToCore(uart_task, "uart_task", 2048, NULL, UART_TASK_PRIORITY, NULL, UART_TASK_CORE_ID);
 
     ESP_LOGI(TAG_MIMI, "Free heap: %lu", esp_get_free_heap_size());
     ESP_LOGI(TAG_MIMI, "Free PSRAM: %u", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
