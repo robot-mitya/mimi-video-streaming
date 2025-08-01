@@ -19,7 +19,7 @@
 #define UART_PORT UART_NUM_0
 // #define UART_TX_PIN 43
 // #define UART_RX_PIN 44
-#define UART_BUF_SIZE 256
+#define UART_BUF_SIZE 80
 
 extern const char *TAG_MIMI;
 

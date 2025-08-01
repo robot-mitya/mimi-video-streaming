@@ -1,8 +1,13 @@
 #include "mimi_uart.h"
+
+#include <string.h>
+
 #include "mimi_common.h"
 #include "esp_err.h"
 
 #include "driver/uart.h"
+
+#include "mimi_language.h"
 
 void init_uart() {
     const uart_config_t uart_config = {
@@ -21,6 +26,7 @@ void uart_task(void *) {
     int len = 0;
     char line[UART_BUF_SIZE];
     int line_pos = 0;
+    char mnemonic[MAX_MNEMONIC_LENGTH];
 
     // ReSharper disable once CppDFAEndlessLoop
     while (true) {
@@ -31,7 +37,10 @@ void uart_task(void *) {
                 if (c == '\n' || c == '\r') {
                     if (line_pos > 0) {
                         line[line_pos] = 0;
-                        uart_write_bytes(UART_PORT, line, line_pos);
+                        unsigned int startPos = 0;
+                        bool isString;
+                        startPos = extractLexeme(startPos, UART_BUF_SIZE, line, mnemonic, &isString);
+                        uart_write_bytes(UART_PORT, mnemonic, strlen(mnemonic));
                         uart_write_bytes(UART_PORT, "\r\n", 2);
                         line_pos = 0;
                     }

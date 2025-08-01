@@ -5,4 +5,5 @@ idf_component_register(SRCS
         "mimi_wifi.c"
         "mimi_webserver.c"
         "mimi_uart.c"
+        "mimi_language.c"
         INCLUDE_DIRS ".")
