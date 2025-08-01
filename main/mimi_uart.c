@@ -4,10 +4,10 @@
 
 #include "mimi_common.h"
 #include "esp_err.h"
+#include "mimi_language.h"
+#include "mimi_command_processor.h"
 
 #include "driver/uart.h"
-
-#include "mimi_language.h"
 
 void init_uart() {
     const uart_config_t uart_config = {
@@ -40,8 +40,12 @@ void uart_task(void *) {
                         unsigned int startPos = 0;
                         bool isString;
                         startPos = extractLexeme(startPos, UART_BUF_SIZE, line, mnemonic, &isString);
-                        uart_write_bytes(UART_PORT, mnemonic, strlen(mnemonic));
-                        uart_write_bytes(UART_PORT, "\r\n", 2);
+                        const CommandFunc commandHandler = getCommandHandler(mnemonic);
+                        if (commandHandler != NULL) {
+                            commandHandler(line, startPos);
+                        }
+                        // uart_write_bytes(UART_PORT, mnemonic, strlen(mnemonic));
+                        // uart_write_bytes(UART_PORT, "\r\n", 2);
                         line_pos = 0;
                     }
                 } else if (line_pos < UART_BUF_SIZE - 1) {
